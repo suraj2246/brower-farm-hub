@@ -760,17 +760,22 @@ const loadProfiles = async () => {
 };
 
 const renderProfiles = (list) => {
-  const grid  = document.getElementById('profileGrid');
-  const empty = document.getElementById('emptyState');
+  const grid = document.getElementById('profileGrid');
 
   if (list.length === 0) {
-    grid.innerHTML = '';
-    grid.appendChild(empty);
+    grid.innerHTML = `
+      <div class="empty-state">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+        </svg>
+        <h3>No Profiles Yet</h3>
+        <p style="font-size:11px">Create your first warm browser profile</p>
+        <button class="btn btn-primary" onclick="showCreateModal()">+ New Profile</button>
+      </div>`;
     return;
   }
 
-  const cards = list.map(p => buildCard(p));
-  grid.innerHTML = cards.join('');
+  grid.innerHTML = list.map(p => buildCard(p)).join('');
 };
 
 const buildCard = (p) => {
