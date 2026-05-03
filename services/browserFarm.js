@@ -70,19 +70,24 @@ const fetchEngineProxy = async (log) => {
   log('info', `Calling engine: GET ${endpoint}`);
 
   const res = await axios.get(endpoint, {
-    headers: { Authorization: `Bearer ${key}` },
+    headers: { 'x-engine-key': key },  // engine uses x-engine-key header
     timeout: 10000,
   });
 
   log('info', `Engine response: ${res.status} — ${JSON.stringify(res.data).substring(0, 120)}`);
 
-  const proxies = res.data?.proxies || res.data;
-  if (!Array.isArray(proxies) || proxies.length === 0) {
-    throw new Error('Engine returned no active proxies — add a proxy in SocialHub Engine first');
+  // Engine returns all proxies — filter active ones client-side
+  const all = Array.isArray(res.data) ? res.data : (res.data?.proxies || []);
+  log('info', `Total proxies from engine: ${all.length} — statuses: ${[...new Set(all.map(p=>p.status))].join(', ')}`);
+
+  const proxies = all.filter(p => p.status === 'active');
+  if (proxies.length === 0) {
+    const statuses = all.map(p => `${p.host}:${p.port}=${p.status}`).join(', ');
+    throw new Error(`No active proxies in engine. Found: ${statuses || 'none'} — test your proxies in SocialHub Engine first`);
   }
 
   const p = proxies[0];
-  log('success', `Got proxy from engine: ${p.protocol}://${p.host}:${p.port}`);
+  log('success', `Got proxy from engine: ${p.protocol}://${p.host}:${p.port} (status: ${p.status})`);
   return { protocol: p.protocol || 'socks5', host: p.host, port: p.port, username: p.username || '', password: p.password || '', engineProxyId: p._id };
 };
 
