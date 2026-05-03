@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser Farm — SocialHub</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg:       #080b0f;
+    --surface:  #0d1117;
+    --border:   #1c2333;
+    --border2:  #2d3748;
+    --green:    #00ff88;
+    --green-dim:#00cc6a;
+    --yellow:   #ffd700;
+    --red:      #ff4455;
+    --blue:     #4da6ff;
+    --text:     #c9d1d9;
+    --muted:    #6e7681;
+    --card:     #0d1117;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: -0.5px;
+    color: #fff;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 12px var(--green);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.4;} }
+
+  .header-stats {
+    display: flex; gap: 24px; align-items: center;
+  }
+  .stat-pill {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 11px;
+  }
+  .stat-pill .num { color: #fff; font-weight: 600; }
+
+  .btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    padding: 7px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border2);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    transition: all .15s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { background: var(--border); color: #fff; }
+  .btn-primary { background: var(--green); color: #000; border-color: var(--green); font-weight: 600; }
+  .btn-primary:hover { background: var(--green-dim); border-color: var(--green-dim); }
+  .btn-danger { border-color: var(--red); color: var(--red); }
+  .btn-danger:hover { background: var(--red); color: #fff; }
+  .btn-sm { padding: 4px 10px; font-size: 11px; }
+
+  /* ── LAYOUT ── */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 420px;
+    grid-template-rows: auto 1fr;
+    gap: 0;
+    height: calc(100vh - 57px);
+  }
+
+  /* ── LEFT PANEL — Profile list ── */
+  .panel-left {
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-toolbar {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface);
+  }
+  .panel-toolbar h2 {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    flex: 1;
+    letter-spacing: .5px;
+    color: #fff;
+  }
+
+  .profile-grid {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .profile-grid::-webkit-scrollbar { width: 4px; }
+  .profile-grid::-webkit-scrollbar-track { background: transparent; }
+  .profile-grid::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+  /* ── PROFILE CARD ── */
+  .profile-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    position: relative;
+  }
+  .profile-card:hover { border-color: var(--border2); background: #111622; }
+  .profile-card.active { border-color: var(--green); background: #0a1a12; }
+  .profile-card.live { border-color: var(--blue); }
+  .profile-card.live::before {
+    content: '⬤ LIVE';
+    position: absolute;
+    top: 10px; right: 10px;
+    font-size: 9px;
+    color: var(--blue);
+    letter-spacing: 1px;
+    animation: pulse 1.5s infinite;
+  }
+
+  .card-top {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.new      { background: var(--muted); }
+  .status-dot.warming  { background: var(--yellow); box-shadow: 0 0 8px var(--yellow); animation: pulse 1.5s infinite; }
+  .status-dot.ready    { background: var(--green);  box-shadow: 0 0 10px var(--green); }
+  .status-dot.used     { background: var(--muted); }
+  .status-dot.error    { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+  .status-dot.paused   { background: var(--blue); }
+
+  .card-name {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 13px;
+    color: #fff;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-status {
+    font-size: 10px;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+  }
+  .status-new     { background: #1c2333; color: var(--muted); }
+  .status-warming { background: #2a2000; color: var(--yellow); }
+  .status-ready   { background: #001a0f; color: var(--green); }
+  .status-used    { background: #1c2333; color: var(--muted); }
+  .status-error   { background: #1a0008; color: var(--red); }
+  .status-paused  { background: #001020; color: var(--blue); }
+
+  .card-meta {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .meta-item { display: flex; flex-direction: column; gap: 2px; }
+  .meta-label { font-size: 9px; color: var(--muted); letter-spacing: .5px; text-transform: uppercase; }
+  .meta-val   { font-size: 12px; color: #fff; font-weight: 500; }
+
+  .fbp-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .fbp-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--yellow), var(--green));
+    transition: width .5s ease;
+  }
+
+  .card-proxy {
+    font-size: 10px;
+    color: var(--muted);
+    display: flex; align-items: center; gap: 6px;
+    margin-bottom: 10px;
+  }
+  .proxy-badge {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    letter-spacing: .5px;
+    background: var(--border);
+    color: var(--blue);
+  }
+
+  .card-actions {
+    display: flex; gap: 6px;
+  }
+
+  .card-detail {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* ── RIGHT PANEL — Live view + logs ── */
+  .panel-right {
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  .live-view-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .live-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+    flex: 1;
+  }
+  .live-indicator {
+    font-size: 9px;
+    letter-spacing: 1px;
+    color: var(--blue);
+    animation: pulse 1s infinite;
+  }
+
+  .live-view {
+    position: relative;
+    background: #000;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+    flex-shrink: 0;
+    height: 280px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .live-view canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .live-placeholder {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    color: var(--muted); font-size: 12px;
+  }
+  .live-placeholder svg { opacity: .3; }
+
+  .fps-badge {
+    position: absolute;
+    top: 8px; right: 8px;
+    background: rgba(0,0,0,.7);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 10px;
+    color: var(--green);
+    display: none;
+  }
+
+  /* ── LOG PANEL ── */
+  .log-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 14px;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .log-panel::-webkit-scrollbar { width: 3px; }
+  .log-panel::-webkit-scrollbar-thumb { background: var(--border2); }
+
+  .log-line {
+    display: flex; gap: 8px; align-items: flex-start;
+    padding: 3px 0;
+    border-bottom: 1px solid #0d1117;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .log-time  { color: var(--muted); flex-shrink: 0; font-size: 10px; }
+  .log-level { flex-shrink: 0; font-size: 9px; font-weight: 700; letter-spacing: .5px; width: 50px; }
+  .log-info    .log-level { color: var(--blue); }
+  .log-success .log-level { color: var(--green); }
+  .log-warning .log-level { color: var(--yellow); }
+  .log-error   .log-level { color: var(--red); }
+  .log-msg { color: var(--text); word-break: break-word; }
+  .log-empty { color: var(--muted); font-size: 11px; text-align: center; padding: 20px 0; }
+
+  /* ── CREATE MODAL ── */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.8);
+    backdrop-filter: blur(4px);
+    z-index: 200;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.show { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 14px;
+    padding: 24px;
+    width: 480px;
+    max-width: 95vw;
+  }
+  .modal h3 {
+    font-family: 'Syne', sans-serif;
+    font-size: 16px;
+    font-weight: 800;
+    color: #fff;
+    margin-bottom: 20px;
+  }
+  .form-group { margin-bottom: 14px; }
+  .form-label { font-size: 11px; color: var(--muted); letter-spacing: .5px; text-transform: uppercase; margin-bottom: 6px; display: block; }
+  .form-input, .form-select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border2);
+    border-radius: 6px;
+    padding: 9px 12px;
+    color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    outline: none;
+    transition: border-color .15s;
+  }
+  .form-input:focus, .form-select:focus { border-color: var(--green); }
+  .proxy-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .proxy-fields.three { grid-template-columns: 2fr 1fr; }
+  .proxy-fields.auth  { grid-template-columns: 1fr 1fr; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+
+  #proxyManualFields { display: none; }
+  #proxyManualFields.show { display: block; }
+
+  /* ── EMPTY STATE ── */
+  .empty-state {
+    flex: 1;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px;
+    color: var(--muted);
+  }
+  .empty-state h3 { font-family: 'Syne', sans-serif; font-size: 16px; color: var(--text); }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+
+  /* ── LOGIN SCREEN ── */
+  #loginScreen {
+    position: fixed; inset: 0; z-index: 1000;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #loginScreen::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(0,255,136,.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,136,.015) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  #loginScreen.hidden { display: none; }
+  .login-box {
+    width: 380px; position: relative; z-index: 1;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .login-logo {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 12px; margin-bottom: 36px;
+  }
+  .login-icon {
+    width: 54px; height: 54px;
+    border: 1px solid var(--border2); border-radius: 16px;
+    background: var(--surface);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    box-shadow: 0 0 30px rgba(0,255,136,.1);
+  }
+  .login-heading {
+    font-family: 'Syne', sans-serif; font-size: 22px;
+    font-weight: 800; color: #fff; letter-spacing: -.5px; text-align: center;
+  }
+  .login-sub { font-size: 11px; color: var(--muted); text-align: center; }
+  .login-form {
+    width: 100%;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 28px;
+  }
+  .login-label {
+    display: block; font-size: 10px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 8px;
+  }
+  .login-input-wrap { position: relative; margin-bottom: 16px; }
+  .login-input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border2);
+    border-radius: 8px; padding: 12px 44px 12px 14px;
+    color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 13px;
+    outline: none; letter-spacing: 1px; transition: border-color .15s, box-shadow .15s;
+  }
+  .login-input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(0,255,136,.08); }
+  .login-input.shake { animation: shake .3s ease; }
+  @keyframes shake {
+    0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)}
+    40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)}
+  }
+  .login-eye {
+    position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; cursor: pointer;
+    color: var(--muted); font-size: 16px; padding: 4px; transition: color .15s;
+  }
+  .login-eye:hover { color: var(--text); }
+  .login-error {
+    background: rgba(255,68,85,.08); border: 1px solid rgba(255,68,85,.3);
+    border-radius: 6px; padding: 9px 12px; font-size: 11px; color: var(--red);
+    margin-bottom: 16px; display: none; text-align: center;
+  }
+  .login-error.show { display: block; }
+  .login-btn {
+    width: 100%; background: var(--green); color: #000; border: none;
+    border-radius: 8px; padding: 13px;
+    font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700;
+    cursor: pointer; letter-spacing: .5px;
+    transition: background .15s, transform .1s;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .login-btn:hover { background: var(--green-dim); }
+  .login-btn:active { transform: scale(.98); }
+  .login-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .login-footer { margin-top: 16px; font-size: 10px; color: var(--muted); text-align: center; }
+  .logout-btn {
+    font-size: 11px; color: var(--muted); background: none;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 12px; cursor: pointer;
+    font-family: 'JetBrains Mono', monospace; transition: all .15s;
+  }
+  .logout-btn:hover { border-color: var(--red); color: var(--red); }
+
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 12px;
+    z-index: 999;
+    animation: slideIn .2s ease;
+    max-width: 300px;
+  }
+  .toast.success { border-color: var(--green); color: var(--green); }
+  .toast.error   { border-color: var(--red); color: var(--red); }
+  @keyframes slideIn { from{transform:translateY(10px);opacity:0;} to{transform:translateY(0);opacity:1;} }
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN SCREEN ── -->
+<div id="loginScreen">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="login-icon">🌾</div>
+      <div class="login-heading">Browser Farm</div>
+      <div class="login-sub">SocialHub Engine · Restricted Access</div>
+    </div>
+    <div class="login-form">
+      <label class="login-label">API Key</label>
+      <div class="login-input-wrap">
+        <input
+          class="login-input"
+          id="loginKey"
+          type="password"
+          placeholder="Enter your API key..."
+          autocomplete="current-password"
+          onkeydown="if(event.key==='Enter') doLogin()"
+        />
+        <button class="login-eye" onclick="toggleKeyVisibility()" title="Show/hide">👁</button>
+      </div>
+      <div class="login-error" id="loginError">Incorrect API key — access denied</div>
+      <button class="login-btn" id="loginBtn" onclick="doLogin()">
+        <span id="loginBtnText">Unlock Dashboard</span>
+      </button>
+    </div>
+    <div class="login-footer">Key is set via <code>API_KEY</code> env var on Railway</div>
+  </div>
+</div>
+
+<!-- ── MAIN APP (hidden until authenticated) ── -->
+<div id="mainApp" style="display:none">
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    Browser Farm
+    <span style="color:var(--muted);font-weight:400;font-size:12px;">/ SocialHub Engine</span>
+  </div>
+  <div class="header-stats">
+    <div class="stat-pill">🟡 Warming: <span class="num" id="stat-warming">0</span></div>
+    <div class="stat-pill">🟢 Ready: <span class="num" id="stat-ready">0</span></div>
+    <div class="stat-pill">⚡ Active: <span class="num" id="stat-active">0</span></div>
+    <button class="btn btn-primary" onclick="showCreateModal()">+ New Profile</button>
+    <button class="logout-btn" onclick="doLogout()">⎋ Logout</button>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ── LEFT: Profile list ── -->
+  <div class="panel-left">
+    <div class="panel-toolbar">
+      <h2>BROWSER PROFILES</h2>
+      <button class="btn btn-sm" onclick="loadProfiles()">↻ Refresh</button>
+    </div>
+    <div class="profile-grid" id="profileGrid">
+      <div class="empty-state" id="emptyState">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+        </svg>
+        <h3>No Profiles Yet</h3>
+        <p style="font-size:11px">Create your first warm browser profile</p>
+        <button class="btn btn-primary" onclick="showCreateModal()">+ New Profile</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT: Live view + logs ── -->
+  <div class="panel-right">
+    <div class="live-view-header">
+      <div class="live-title" id="liveTitle">Select a profile to watch</div>
+      <div class="live-indicator" id="liveIndicator" style="display:none">⬤ LIVE</div>
+      <button class="btn btn-sm" id="watchBtn" onclick="toggleWatch()" style="display:none">▶ Watch Live</button>
+    </div>
+
+    <div class="live-view" id="liveView">
+      <div class="live-placeholder" id="livePlaceholder">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <rect x="2" y="4" width="20" height="16" rx="2"/><circle cx="12" cy="12" r="4"/><path d="M12 8v1M12 15v1M8 12h1M15 12h1"/>
+        </svg>
+        <span>No live session running</span>
+        <span style="font-size:10px;color:var(--muted)">Start a warm session to see live browser view</span>
+      </div>
+      <canvas id="liveCanvas" style="display:none"></canvas>
+      <div class="fps-badge" id="fpsBadge">-- fps</div>
+    </div>
+
+    <div class="log-panel" id="logPanel">
+      <div class="log-empty" id="logEmpty">Select a profile to see logs</div>
+    </div>
+  </div>
+
+</div>
+
+</div><!-- /mainApp -->
+
+<!-- ── Create Profile Modal ── -->
+<div class="modal-overlay" id="createModal">
+  <div class="modal">
+    <h3>+ New Browser Profile</h3>
+
+    <div class="form-group">
+      <label class="form-label">Profile Name</label>
+      <input class="form-input" id="newName" placeholder="e.g. Farm-US-01" />
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Proxy Source</label>
+      <select class="form-select" id="proxyMode" onchange="onProxyModeChange()">
+        <option value="manual">Manual — enter proxy below</option>
+        <option value="engine">SocialHub Engine — use engine proxy pool</option>
+      </select>
+    </div>
+
+    <div id="proxyManualFields" class="show">
+      <div class="form-group">
+        <label class="form-label">Protocol</label>
+        <select class="form-select" id="proxyProtocol">
+          <option value="socks5">SOCKS5 (recommended)</option>
+          <option value="socks4">SOCKS4</option>
+          <option value="http">HTTP</option>
+          <option value="https">HTTPS</option>
+        </select>
+      </div>
+      <div class="form-group proxy-fields three">
+        <div>
+          <label class="form-label">Host</label>
+          <input class="form-input" id="proxyHost" placeholder="proxy.711proxy.net" />
+        </div>
+        <div>
+          <label class="form-label">Port</label>
+          <input class="form-input" id="proxyPort" placeholder="1234" type="number" />
+        </div>
+      </div>
+      <div class="form-group proxy-fields auth">
+        <div>
+          <label class="form-label">Username (optional)</label>
+          <input class="form-input" id="proxyUser" placeholder="username" />
+        </div>
+        <div>
+          <label class="form-label">Password (optional)</label>
+          <input class="form-input" id="proxyPass" placeholder="password" type="password" />
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" onclick="hideCreateModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="createProfile()">Create Profile</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '/api/farm';
+
+// ── Socket.io ──────────────────────────────────────────────────────────────────
+const socket = io();
+let watchingProfileId = null;
+let selectedProfileId = null;
+let frameCount = 0, lastFpsCheck = Date.now(), currentFps = 0;
+
+socket.on('connect', () => console.log('Socket connected'));
+
+socket.on('profile_update', (data) => {
+  updateProfileCard(data);
+  updateStats();
+  if (selectedProfileId === data._id) {
+    // Update live indicator
+    const liveInd = document.getElementById('liveIndicator');
+    const watchBtn = document.getElementById('watchBtn');
+    liveInd.style.display = data.isLive ? 'block' : 'none';
+    if (watchBtn) {
+      watchBtn.style.display = data.isLive ? 'flex' : 'none';
+      watchBtn.textContent = (watchingProfileId === data._id) ? '■ Stop Watch' : '▶ Watch Live';
+    }
+  }
+});
+
+socket.on('farm_log', (data) => {
+  if (data.profileId === selectedProfileId) {
+    appendLog(data.level, data.msg, data.time);
+  }
+});
+
+// ── Live frame rendering ─────────────────────────────────────────────────────
+const canvas  = document.getElementById('liveCanvas');
+const ctx2d   = canvas.getContext('2d');
+const placeholder = document.getElementById('livePlaceholder');
+const fpsBadge    = document.getElementById('fpsBadge');
+
+socket.on('farm_frame', (data) => {
+  if (data.profileId !== watchingProfileId) return;
+
+  frameCount++;
+  const now = Date.now();
+  if (now - lastFpsCheck > 1000) {
+    currentFps = Math.round(frameCount * 1000 / (now - lastFpsCheck));
+    fpsBadge.textContent = currentFps + ' fps';
+    frameCount = 0;
+    lastFpsCheck = now;
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    // Set canvas size to match actual frame (only once)
+    if (canvas.width !== img.width) {
+      canvas.width  = img.width;
+      canvas.height = img.height;
+    }
+    ctx2d.drawImage(img, 0, 0);
+  };
+  img.src = data.frame;
+});
+
+socket.on('session_started', (data) => {
+  if (data.profileId === selectedProfileId) showLiveControls(true);
+});
+socket.on('session_ended', (data) => {
+  if (data.profileId === watchingProfileId) {
+    stopWatch();
+  }
+});
+socket.on('session_killed', (data) => {
+  if (data.profileId === watchingProfileId) {
+    stopWatch();
+    toast(`Proxy killed: ${data.reason}`, 'error');
+  }
+  loadProfiles();
+});
+socket.on('profile_ready', (data) => {
+  toast(`Profile ${data.profileId.slice(-6)} is READY! 🟢`, 'success');
+  loadProfiles();
+});
+
+// ── Profiles ──────────────────────────────────────────────────────────────────
+let profiles = {};
+
+const loadProfiles = async () => {
+  try {
+    const res  = await fetch(`${API}/profiles`, { headers });
+    const list = await res.json();
+    profiles   = {};
+    list.forEach(p => { profiles[p._id] = p; });
+    renderProfiles(list);
+    updateStats();
+  } catch (e) {
+    console.error('Load profiles failed:', e);
+  }
+};
+
+const renderProfiles = (list) => {
+  const grid  = document.getElementById('profileGrid');
+  const empty = document.getElementById('emptyState');
+
+  if (list.length === 0) {
+    grid.innerHTML = '';
+    grid.appendChild(empty);
+    return;
+  }
+
+  const cards = list.map(p => buildCard(p));
+  grid.innerHTML = cards.join('');
+};
+
+const buildCard = (p) => {
+  const fbpPercent = Math.min(100, (p.fbpCookieAge / 2) * 100);
+  const isLive     = p.isLive;
+  const proxyStr   = p.proxy?.host ? `${p.proxy.host}:${p.proxy.port}` : 'No proxy';
+  const lastSess   = p.lastSessionAt
+    ? new Date(p.lastSessionAt).toLocaleString()
+    : 'Never';
+
+  return `
+  <div class="profile-card ${p._id === selectedProfileId ? 'active' : ''} ${isLive ? 'live' : ''}"
+       onclick="selectProfile('${p._id}')">
+    <div class="card-top">
+      <div class="status-dot ${p.status}"></div>
+      <div class="card-name">${p.name}</div>
+      <span class="card-status status-${p.status}">${p.status.toUpperCase()}</span>
+    </div>
+
+    <div class="card-meta">
+      <div class="meta-item">
+        <div class="meta-label">Days Warmed</div>
+        <div class="meta-val">${p.daysWarmed || 0}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">Sessions</div>
+        <div class="meta-val">${p.sessionsCompleted || 0}</div>
+      </div>
+      <div class="meta-item">
+        <div class="meta-label">_fbp Age</div>
+        <div class="meta-val">${p.fbpCookieAge ? p.fbpCookieAge.toFixed(1) + 'd' : '—'}</div>
+      </div>
+    </div>
+
+    <div class="fbp-bar">
+      <div class="fbp-fill" style="width:${fbpPercent}%"></div>
+    </div>
+
+    <div class="card-proxy">
+      <span class="proxy-badge">${p.proxyMode === 'engine' ? 'ENGINE' : 'MANUAL'}</span>
+      ${proxyStr}
+    </div>
+
+    <div class="card-detail">${p.statusDetail || '—'}</div>
+
+    <div class="card-actions" onclick="event.stopPropagation()" style="margin-top:10px">
+      <button class="btn btn-sm" onclick="runSession('${p._id}')">▶ Run Now</button>
+      ${p.status === 'warming' || p.status === 'new'
+        ? `<button class="btn btn-sm" onclick="pauseProfile('${p._id}')">⏸ Pause</button>`
+        : p.status === 'paused'
+          ? `<button class="btn btn-sm" onclick="resumeProfile('${p._id}')">▶ Resume</button>`
+          : ''}
+      <button class="btn btn-sm btn-danger" onclick="deleteProfile('${p._id}')">✕</button>
+    </div>
+  </div>`;
+};
+
+const updateProfileCard = (data) => {
+  if (profiles[data._id]) {
+    profiles[data._id] = { ...profiles[data._id], ...data };
+  }
+  const existing = document.querySelector(`[onclick="selectProfile('${data._id}')"]`);
+  if (existing) {
+    existing.outerHTML = buildCard(profiles[data._id] || data);
+  }
+};
+
+// ── Select profile → load logs ────────────────────────────────────────────────
+const selectProfile = async (id) => {
+  selectedProfileId = id;
+  document.querySelectorAll('.profile-card').forEach(c => c.classList.remove('active'));
+  const card = document.querySelector(`[onclick="selectProfile('${id}')"]`);
+  if (card) card.classList.add('active');
+
+  const p = profiles[id];
+  if (p) {
+    document.getElementById('liveTitle').textContent = p.name;
+    const watchBtn = document.getElementById('watchBtn');
+    watchBtn.style.display = p.isLive ? 'flex' : 'none';
+    watchBtn.textContent   = watchingProfileId === id ? '■ Stop Watch' : '▶ Watch Live';
+    document.getElementById('liveIndicator').style.display = p.isLive ? 'block' : 'none';
+  }
+
+  // Load logs
+  try {
+    const res  = await fetch(`${API}/profiles/${id}/logs`, { headers });
+    const data = await res.json();
+    const panel = document.getElementById('logPanel');
+    document.getElementById('logEmpty').style.display = 'none';
+    panel.innerHTML = '';
+    if (!data.logs || data.logs.length === 0) {
+      panel.innerHTML = '<div class="log-empty">No logs yet — run a session first</div>';
+      return;
+    }
+    data.logs.forEach(l => appendLog(l.level, l.msg, l.time, false));
+    panel.scrollTop = panel.scrollHeight;
+  } catch (e) {
+    console.error('Load logs failed:', e);
+  }
+};
+
+const appendLog = (level, msg, time, scroll = true) => {
+  const panel = document.getElementById('logPanel');
+  document.getElementById('logEmpty').style.display = 'none';
+  const t   = time ? new Date(time).toLocaleTimeString() : new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  div.className = `log-line log-${level}`;
+  div.innerHTML = `<span class="log-time">${t}</span><span class="log-level">${level.toUpperCase()}</span><span class="log-msg">${msg}</span>`;
+  panel.appendChild(div);
+  if (panel.children.length > 200) panel.removeChild(panel.children[0]);
+  if (scroll) panel.scrollTop = panel.scrollHeight;
+};
+
+// ── Live watch ────────────────────────────────────────────────────────────────
+const showLiveControls = (isLive) => {
+  document.getElementById('liveIndicator').style.display = isLive ? 'block' : 'none';
+  document.getElementById('watchBtn').style.display      = isLive ? 'flex'  : 'none';
+};
+
+const toggleWatch = () => {
+  if (watchingProfileId === selectedProfileId) { stopWatch(); return; }
+  startWatch(selectedProfileId);
+};
+
+const startWatch = (id) => {
+  if (watchingProfileId) socket.emit('unwatch_profile', watchingProfileId);
+  watchingProfileId = id;
+  socket.emit('watch_profile', id);
+  canvas.style.display       = 'block';
+  placeholder.style.display  = 'none';
+  fpsBadge.style.display     = 'block';
+  document.getElementById('watchBtn').textContent = '■ Stop Watch';
+  frameCount = 0; lastFpsCheck = Date.now();
+};
+
+const stopWatch = () => {
+  if (watchingProfileId) socket.emit('unwatch_profile', watchingProfileId);
+  watchingProfileId = null;
+  canvas.style.display       = 'none';
+  placeholder.style.display  = 'flex';
+  fpsBadge.style.display     = 'none';
+  document.getElementById('watchBtn').textContent = '▶ Watch Live';
+};
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+const runSession = async (id) => {
+  try {
+    await fetch(`${API}/profiles/${id}/run`, { method:'POST', headers });
+    toast('Session started ▶', 'success');
+    if (selectedProfileId === id) startWatch(id);
+  } catch (e) { toast('Failed: ' + e.message, 'error'); }
+};
+
+const pauseProfile = async (id) => {
+  await fetch(`${API}/profiles/${id}/pause`, { method:'POST', headers });
+  loadProfiles();
+};
+const resumeProfile = async (id) => {
+  await fetch(`${API}/profiles/${id}/resume`, { method:'POST', headers });
+  loadProfiles();
+};
+const deleteProfile = async (id) => {
+  if (!confirm('Delete this profile?')) return;
+  if (watchingProfileId === id) stopWatch();
+  if (selectedProfileId === id) { selectedProfileId = null; document.getElementById('liveTitle').textContent = 'Select a profile'; }
+  await fetch(`${API}/profiles/${id}`, { method:'DELETE', headers });
+  loadProfiles();
+};
+
+// ── Create modal ──────────────────────────────────────────────────────────────
+const showCreateModal = () => document.getElementById('createModal').classList.add('show');
+const hideCreateModal = () => document.getElementById('createModal').classList.remove('show');
+document.getElementById('createModal').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) hideCreateModal();
+});
+
+const onProxyModeChange = () => {
+  const mode   = document.getElementById('proxyMode').value;
+  const fields = document.getElementById('proxyManualFields');
+  fields.classList.toggle('show', mode === 'manual');
+};
+
+const createProfile = async () => {
+  const name      = document.getElementById('newName').value.trim() || `Farm-${Date.now()}`;
+  const proxyMode = document.getElementById('proxyMode').value;
+
+  let proxy = null;
+  if (proxyMode === 'manual') {
+    const host = document.getElementById('proxyHost').value.trim();
+    const port = parseInt(document.getElementById('proxyPort').value);
+    if (!host || !port) { toast('Proxy host + port required', 'error'); return; }
+    proxy = {
+      protocol: document.getElementById('proxyProtocol').value,
+      host, port,
+      username: document.getElementById('proxyUser').value.trim(),
+      password: document.getElementById('proxyPass').value.trim(),
+    };
+  }
+
+  try {
+    const res = await fetch(`${API}/profiles`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ name, proxyMode, proxy }),
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+    hideCreateModal();
+    toast('Profile created ✓', 'success');
+    loadProfiles();
+  } catch (e) { toast(e.message, 'error'); }
+};
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+let API_KEY = sessionStorage.getItem('farm_key') || '';
+let headers = { 'Content-Type': 'application/json', 'x-api-key': API_KEY };
+
+const showApp = () => {
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('mainApp').style.display = 'block';
+};
+const showLogin = () => {
+  document.getElementById('loginScreen').classList.remove('hidden');
+  document.getElementById('mainApp').style.display = 'none';
+  document.getElementById('loginKey').value = '';
+  document.getElementById('loginError').classList.remove('show');
+};
+
+const toggleKeyVisibility = () => {
+  const inp = document.getElementById('loginKey');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+};
+
+const doLogin = async () => {
+  const key = document.getElementById('loginKey').value.trim();
+  if (!key) return;
+
+  const btn  = document.getElementById('loginBtn');
+  const txt  = document.getElementById('loginBtnText');
+  const err  = document.getElementById('loginError');
+  const inp  = document.getElementById('loginKey');
+
+  btn.disabled = true;
+  txt.textContent = 'Verifying...';
+  err.classList.remove('show');
+
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+
+    if (res.ok) {
+      API_KEY = key;
+      headers = { 'Content-Type': 'application/json', 'x-api-key': API_KEY };
+      sessionStorage.setItem('farm_key', key);
+      showApp();
+      initApp();
+    } else {
+      err.classList.add('show');
+      inp.classList.add('shake');
+      setTimeout(() => inp.classList.remove('shake'), 400);
+      inp.focus();
+      inp.select();
+    }
+  } catch (e) {
+    err.textContent = 'Server unreachable — ' + e.message;
+    err.classList.add('show');
+  } finally {
+    btn.disabled = false;
+    txt.textContent = 'Unlock Dashboard';
+  }
+};
+
+const doLogout = () => {
+  sessionStorage.removeItem('farm_key');
+  API_KEY = '';
+  headers = { 'Content-Type': 'application/json', 'x-api-key': '' };
+  if (watchingProfileId) stopWatch();
+  showLogin();
+};
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+const updateStats = async () => {
+  try {
+    const res  = await fetch(`${API}/stats`, { headers });
+    if (res.status === 401) { doLogout(); return; }
+    const data = await res.json();
+    document.getElementById('stat-warming').textContent = data.warming || 0;
+    document.getElementById('stat-ready').textContent   = data.ready   || 0;
+    document.getElementById('stat-active').textContent  = data.active  || 0;
+  } catch {}
+};
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+const toast = (msg, type='success') => {
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+};
+
+// ── Init (called after successful login) ──────────────────────────────────────
+const initApp = () => {
+  loadProfiles();
+  setInterval(updateStats, 10000);
+  updateStats();
+};
+
+// ── Boot: check if already have a session key ─────────────────────────────────
+(async () => {
+  if (!API_KEY) { showLogin(); return; }
+
+  // Validate saved key silently
+  try {
+    const res = await fetch('/api/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: API_KEY }),
+    });
+    if (res.ok) { showApp(); initApp(); }
+    else        { sessionStorage.removeItem('farm_key'); showLogin(); }
+  } catch { showLogin(); }
+})();
+</script>
+</body>
+</html>
