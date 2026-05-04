@@ -185,10 +185,13 @@ const runWarmSession = async (profileId) => {
 
     // ── STEP 4: Kill switch + screencast ─────────────────────────────────
     log('info', `[STEP 4/7] Starting kill switch & screencast... ${elapsed(sessionStart)}`);
+    let sessionKilled = false;
     stopMonitor = proxyMonitor.startMonitor(proxyData, async (reason) => {
       log('error', `  ⚡ KILL SWITCH TRIGGERED: ${reason}`);
       log('error', '  Closing browser — no bare-IP traffic allowed');
-      profile.proxyKillCount++; profile.statusDetail = `Killed: ${reason}`;
+      sessionKilled = true;
+      profile.proxyKillCount++; profile.statusDetail = `Proxy killed: ${reason}`;
+      profile.status = 'error'; profile.lastError = reason;
       await profile.save().catch(() => {}); emitProfile(profile);
       await context.close().catch(() => {});
       _activeSessions.delete(profileId.toString());
@@ -204,6 +207,7 @@ const runWarmSession = async (profileId) => {
     const isDay1 = profile.daysWarmed === 0;
 
     // ── STEP 5: Browse news sites ─────────────────────────────────────────
+    if (sessionKilled) { log('warning', 'Killed before Step 5 — aborting'); return; }
     log('info', `[STEP 5/7] Browsing neutral sites... ${elapsed(sessionStart)}`);
     await setStatus(profile, 'Step 5/7: Browsing news sites...');
     const newsSites = ['https://www.bbc.com','https://www.reuters.com','https://www.theguardian.com','https://www.cnn.com','https://www.npr.org'];
@@ -213,6 +217,7 @@ const runWarmSession = async (profileId) => {
     if (Math.random() < 0.7) { log('info', '  + YouTube session'); await browseWebsite(page, 'https://www.youtube.com', randInt(25000,40000), log, sessionStart); }
 
     // ── STEP 6: Facebook guest visit ──────────────────────────────────────
+    if (sessionKilled) { log('warning', 'Killed before Step 6 — aborting'); return; }
     log('info', `[STEP 6/7] Facebook guest visit — setting _fbp cookie... ${elapsed(sessionStart)}`);
     await setStatus(profile, 'Step 6/7: Setting Facebook _fbp cookie...');
     try {
@@ -252,9 +257,10 @@ const runWarmSession = async (profileId) => {
     }
 
     // ── STEP 7: Save + evaluate readiness ────────────────────────────────
+    if (sessionKilled) { log('warning', 'Session was killed by proxy monitor — skipping save'); return; }
     log('info', `[STEP 7/7] Saving session & evaluating readiness... ${elapsed(sessionStart)}`);
     await setStatus(profile, 'Step 7/7: Saving...');
-    const sessionData = await saveSession(context);
+    const sessionData = await saveSession(context).catch(e => { throw new Error('saveSession failed: ' + e.message); });
     const cookieCount = JSON.parse(sessionData)?.cookies?.length || 0;
     profile.sessionData = sessionData;
     log('info', `  Saved ${cookieCount} cookies to MongoDB`);
