@@ -748,6 +748,14 @@
     } catch (e) { toast('Network: ' + e.message, 'error'); }
   }
   async function launchInteractive(id) {
+    // If session is already interactive, just watch it instead of trying to launch again
+    const existing = profiles[id];
+    if (existing?.interactive?.active || existing?.isLive) {
+      toast('Session already running — switching to Watch', 'success');
+      selectProfile(id);
+      setTimeout(() => startWatch(id), 200);
+      return;
+    }
     try {
       const r = await fetch(`${API}/profiles/${id}/launch-interactive`, { method: 'POST', headers });
       const d = await r.json();
