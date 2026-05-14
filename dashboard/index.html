@@ -471,7 +471,8 @@
         <div class="progress"><div style="width:${fbpPct}%"></div></div>
         <div class="btns" onclick="event.stopPropagation()">
           ${isInter
-            ? `<button class="btn btn-sm btn-danger" onclick="stopInteractive('${p._id}')">⏹ Stop browser</button>`
+            ? `<button class="btn btn-sm btn-purple" onclick="watchProfile('${p._id}')">👁 Watch</button>
+               <button class="btn btn-sm btn-danger" onclick="stopInteractive('${p._id}')">⏹ Stop browser</button>`
             : `<button class="btn btn-sm btn-purple" onclick="launchInteractive('${p._id}')">🖱 Open browser</button>`}
           <button class="btn btn-sm btn-success" onclick="runSession('${p._id}')">▶ Warm</button>
           <button class="btn btn-sm" onclick="openEditProxy('${p._id}')">🌐 Edit proxy</button>
@@ -747,6 +748,12 @@
       if (selectedProfileId === id) startWatch(id);
     } catch (e) { toast('Network: ' + e.message, 'error'); }
   }
+  // Watch button on card — selects + starts watching in one click
+  function watchProfile(id) {
+    selectProfile(id);
+    setTimeout(() => startWatch(id), 100);
+  }
+
   async function launchInteractive(id) {
     // If session is already interactive, just watch it instead of trying to launch again
     const existing = profiles[id];
