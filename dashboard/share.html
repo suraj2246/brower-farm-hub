@@ -54,8 +54,12 @@
 </div>
 
 <script>
-  // Token from URL: /share/:token
-  const TOKEN = location.pathname.split('/').pop();
+  // Token from URL: /share/:token (handles trailing slash too)
+  const TOKEN = location.pathname.replace(/\/+$/, '').split('/').pop();
+  if (!TOKEN || TOKEN === 'share') {
+    document.body.innerHTML = '<div style="padding:40px;color:#ff8a8a;font-family:sans-serif">Invalid share link — no token in URL.</div>';
+    throw new Error('No token');
+  }
 
   let sessionToken = null;
   let profileId    = null;
