@@ -23,6 +23,19 @@
   .nav-bar input { flex:1; font-size:13px; background:#0a0a14; color:#e0e0e8; border:1px solid #2a2a3a; padding:6px 10px; border-radius:4px; }
   .nav-bar button{ padding:6px 10px; border:1px solid #3a3a4a; background:#22222e; color:#e0e0e8; border-radius:4px; font-size:12px; cursor:pointer; }
   .nav-bar .name { font-size:13px; color:#888; padding:0 8px; }
+
+  /* — Tab strip — */
+  .tab-strip { display: flex; align-items: center; background:#14141c; border-bottom:1px solid #2a2a3a; padding:4px 8px; gap:4px; overflow-x:auto; min-height:32px; }
+  .tab-strip::-webkit-scrollbar { height:4px; }
+  .tab-strip::-webkit-scrollbar-thumb { background:#3a3a4a; border-radius:2px; }
+  .tab-item { display:flex; align-items:center; gap:6px; padding:4px 6px 4px 10px; background:#22222e; border:1px solid #2a2a3a; border-radius:4px; font-size:12px; max-width:220px; cursor:pointer; flex-shrink:0; }
+  .tab-item:hover { background:#2a2a38; }
+  .tab-item.active { background:#2d6cdf; border-color:#2d6cdf; color:#fff; }
+  .tab-item .t-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:170px; }
+  .tab-item .t-close { background:transparent; border:0; color:inherit; padding:0 4px; cursor:pointer; opacity:0.6; font-size:14px; line-height:1; }
+  .tab-item .t-close:hover { opacity:1; }
+  .tab-new-btn { background:#22222e; border:1px solid #2a2a3a; color:#e0e0e8; border-radius:4px; padding:4px 12px; font-size:16px; cursor:pointer; line-height:1; flex-shrink:0; }
+  .tab-new-btn:hover { background:#2a2a38; }
   .view-area { flex:1; background:#050508; overflow:auto; display:flex; align-items:center; justify-content:center; padding:10px; }
   .view-area canvas { max-width:100%; max-height:100%; background:#fff; border:2px solid #d18aff; outline:0; cursor:default; }
   #status { padding:6px 12px; background:#14141c; border-top:1px solid #2a2a3a; font-size:11px; color:#888; }
@@ -41,6 +54,10 @@
 </div>
 
 <div id="viewer">
+  <div class="tab-strip" id="tabStrip">
+    <div id="tabList" style="display:contents"></div>
+    <button class="tab-new-btn" onclick="openNewTab()" title="New tab">+</button>
+  </div>
   <div class="nav-bar">
     <button onclick="navAction('back')"    title="Back">◀</button>
     <button onclick="navAction('forward')" title="Forward">▶</button>
@@ -109,6 +126,15 @@
       if (data.viewportHeight) viewport.height = data.viewportHeight;
       drawFrame(data.frame);
     });
+    socket.on('tabs_updated', ({ profileId: pid, tabs, activeTabId }) => {
+      if (pid !== profileId) return;
+      renderTabs(tabs, activeTabId);
+      const active = tabs.find(t => t.active);
+      const navUrl = document.getElementById('navUrl');
+      if (active && active.url && !active.url.startsWith('data:') && active.url !== 'about:blank' && document.activeElement !== navUrl) {
+        navUrl.value = active.url;
+      }
+    });
     socket.on('session_started', () => { isInteractive = true; setStatus('Browser opened'); attachInput(); });
     socket.on('session_ended',   () => { isInteractive = false; setStatus('Browser closed'); detachInput(); });
     socket.on('session_killed',  ({ reason }) => { isInteractive = false; setStatus('Killed: ' + reason); detachInput(); });
@@ -137,6 +163,26 @@
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
     socket.emit('browser_input', { action: 'navigate', url });
+  }
+
+  // — Tabs —
+  function renderTabs(tabList, activeTabId) {
+    const el = document.getElementById('tabList');
+    el.innerHTML = (tabList || []).map(t => {
+      const display = (t.title && t.title.trim()) || t.url || 'New Tab';
+      const short = display.length > 30 ? display.substring(0, 30) + '…' : display;
+      return `<div class="tab-item ${t.tabId===activeTabId?'active':''}" onclick="switchTab('${t.tabId}')">
+        <span class="t-title" title="${escapeHtml(display)}">${escapeHtml(short)}</span>
+        <button class="t-close" onclick="event.stopPropagation(); closeTab('${t.tabId}')" title="Close">×</button>
+      </div>`;
+    }).join('');
+  }
+  function switchTab(tabId) { if (socket) socket.emit('browser_input', { action: 'switchTab', tabId }); }
+  function closeTab(tabId)  { if (socket) socket.emit('browser_input', { action: 'closeTab',  tabId }); }
+  function openNewTab()     { if (socket) socket.emit('browser_input', { action: 'newTab' }); }
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
   // — Input —
