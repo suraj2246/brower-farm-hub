@@ -117,7 +117,8 @@ io.on('connection', (socket) => {
 // profile-scoped events → admins + share viewers of THAT profile (deduped by socket.io)
 // other events → admins only
 const profileScoped = new Set([
-  'farm_log','session_started','session_ended','session_killed','profile_ready','profile_deleted'
+  'farm_log','session_started','session_ended','session_killed','profile_ready','profile_deleted',
+  'tabs_updated',
 ]);
 
 const _originalEmit = io.emit.bind(io);
