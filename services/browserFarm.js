@@ -385,7 +385,13 @@ const launchInteractive = async (profileId) => {
     emit('session_killed', { profileId: profileId.toString(), reason });
   }, log, { tolerateIpRotation: true });
 
+  // Track when the last frame was emitted (CDP or screenshot).
+  // Used by the periodic screenshot fallback to skip if CDP just emitted.
+  let lastFrameAt = Date.now();
+  let frameRefreshInterval = null;
+
   const screencast = await startScreencast(page, (frame, metadata) => {
+    lastFrameAt = Date.now();
     emit('farm_frame', {
       profileId:      profileId.toString(),
       frame,
@@ -402,6 +408,7 @@ const launchInteractive = async (profileId) => {
     if (stopping) return;
     stopping = true;
     log('info', 'Stopping interactive session...');
+    try { clearInterval(frameRefreshInterval); } catch {}
     try { await screencast.stop(); } catch {}
     try { stopMonitor(); } catch {}
     try { await saveAndMarkClosed(profile, context); } catch (e) { log('warning', `Save err: ${e.message}`); }
@@ -434,7 +441,26 @@ const launchInteractive = async (profileId) => {
   `)}`;
   page.goto(welcomeHtml).catch(()=>{});
 
-  // Force one screenshot frame ~1s after launch as a safety net, in case screencast doesn't emit
+  // Periodic screenshot fallback. Emits a fresh JPEG frame every 4s if CDP
+  // hasn't emitted one recently. This is essential for:
+  //   1) Share viewers connecting late — they get a frame within seconds,
+  //      not minutes (CDP only emits on redraw; idle pages = no frames).
+  //   2) Recovering after socket disconnect/reconnect on slow networks.
+  frameRefreshInterval = setInterval(async () => {
+    if (Date.now() - lastFrameAt < 3500) return; // CDP just emitted, skip
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 5000 });
+      emit('farm_frame', {
+        profileId:      profileId.toString(),
+        frame:          'data:image/jpeg;base64,' + buf.toString('base64'),
+        viewportWidth:  fp.viewport.width,
+        viewportHeight: fp.viewport.height,
+      });
+      lastFrameAt = Date.now();
+    } catch {} // page may be navigating or closed — fine, try again next tick
+  }, 4000);
+
+  // Also fire once immediately at 1.5s to bootstrap the initial frame fast
   setTimeout(async () => {
     try {
       const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
@@ -444,6 +470,7 @@ const launchInteractive = async (profileId) => {
         viewportWidth:  fp.viewport.width,
         viewportHeight: fp.viewport.height,
       });
+      lastFrameAt = Date.now();
     } catch {}
   }, 1500);
 
