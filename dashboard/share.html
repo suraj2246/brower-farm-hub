@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Shared Browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html,body { margin:0; padding:0; height:100%; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0a0a0f; color:#e0e0e8; }
+  #pwScreen { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+  #pwScreen.hidden { display:none; }
+  #pwScreen .box { background:#1a1a26; border:1px solid #2a2a3a; border-radius:8px; padding:32px; min-width:360px; }
+  #pwScreen h1   { margin:0 0 4px; font-size:22px; }
+  #pwScreen p    { color:#888; font-size:13px; margin:0 0 22px; }
+  #pwScreen input{ width:100%; margin:6px 0 14px; padding:10px; background:#0a0a14; border:1px solid #2a2a3a; color:#e0e0e8; border-radius:4px; font-size:14px; }
+  #pwScreen button{ width:100%; padding:11px; background:#2d6cdf; border:0; color:#fff; font-size:14px; border-radius:4px; cursor:pointer; }
+  #pwScreen .err  { color:#ff8a8a; font-size:12px; min-height:16px; }
+
+  #viewer { display:none; height:100vh; flex-direction:column; }
+  #viewer.show { display:flex; }
+  .nav-bar { padding:8px 12px; background:#14141c; border-bottom:1px solid #2a2a3a; display:flex; align-items:center; gap:6px; }
+  .nav-bar input { flex:1; font-size:13px; background:#0a0a14; color:#e0e0e8; border:1px solid #2a2a3a; padding:6px 10px; border-radius:4px; }
+  .nav-bar button{ padding:6px 10px; border:1px solid #3a3a4a; background:#22222e; color:#e0e0e8; border-radius:4px; font-size:12px; cursor:pointer; }
+  .nav-bar .name { font-size:13px; color:#888; padding:0 8px; }
+  .view-area { flex:1; background:#050508; overflow:auto; display:flex; align-items:center; justify-content:center; padding:10px; }
+  .view-area canvas { max-width:100%; max-height:100%; background:#fff; border:2px solid #d18aff; outline:0; cursor:default; }
+  #status { padding:6px 12px; background:#14141c; border-top:1px solid #2a2a3a; font-size:11px; color:#888; }
+</style>
+</head>
+<body>
+
+<div id="pwScreen">
+  <div class="box">
+    <h1>🔒 Shared browser</h1>
+    <p>Enter the password to access this browser session</p>
+    <input id="pwInput" type="password" placeholder="Password" autofocus>
+    <button onclick="doAuth()">Open browser</button>
+    <div class="err" id="pwErr"></div>
+  </div>
+</div>
+
+<div id="viewer">
+  <div class="nav-bar">
+    <button onclick="navAction('back')"    title="Back">◀</button>
+    <button onclick="navAction('forward')" title="Forward">▶</button>
+    <button onclick="navAction('reload')"  title="Reload">↻</button>
+    <input id="navUrl" placeholder="https://..." onkeydown="if(event.key==='Enter') navGo()">
+    <button onclick="navGo()">Go</button>
+    <span class="name" id="profileName"></span>
+  </div>
+  <div class="view-area"><canvas id="cv" tabindex="0"></canvas></div>
+  <div id="status">Connecting...</div>
+</div>
+
+<script>
+  // Token from URL: /share/:token
+  const TOKEN = location.pathname.split('/').pop();
+
+  let sessionToken = null;
+  let profileId    = null;
+  let socket       = null;
+  let viewport     = { width: 1366, height: 800 };
+  let isInteractive = false;
+
+  document.getElementById('pwInput').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
+
+  async function doAuth() {
+    const password = document.getElementById('pwInput').value;
+    const errEl = document.getElementById('pwErr');
+    errEl.textContent = '';
+    if (!password) { errEl.textContent = 'Enter password'; return; }
+    try {
+      const r = await fetch(`/share/${TOKEN}/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      const data = await r.json();
+      if (!r.ok) { errEl.textContent = data.error || 'Failed'; return; }
+      sessionToken   = data.sessionToken;
+      profileId      = data.profileId;
+      viewport.width = data.viewportWidth  || 1366;
+      viewport.height= data.viewportHeight || 800;
+      isInteractive  = !!data.isInteractive;
+      document.getElementById('profileName').textContent = data.profileName;
+      document.getElementById('pwScreen').classList.add('hidden');
+      document.getElementById('viewer').classList.add('show');
+      connectSocket();
+    } catch (e) { errEl.textContent = 'Network error'; }
+  }
+
+  function connectSocket() {
+    if (socket) socket.disconnect();
+    socket = io({ auth: { shareSession: sessionToken } });
+    socket.on('connect', () => {
+      setStatus(isInteractive ? 'Connected — interactive mode' : 'Connected — view-only (no active browser)');
+    });
+    socket.on('connect_error', e => setStatus('Connection error: ' + e.message));
+    socket.on('disconnect',    () => setStatus('Disconnected'));
+
+    socket.on('farm_frame', (data) => {
+      if (data.profileId !== profileId) return;
+      if (data.viewportWidth)  viewport.width  = data.viewportWidth;
+      if (data.viewportHeight) viewport.height = data.viewportHeight;
+      drawFrame(data.frame);
+    });
+    socket.on('session_started', () => { isInteractive = true; setStatus('Browser opened'); attachInput(); });
+    socket.on('session_ended',   () => { isInteractive = false; setStatus('Browser closed'); detachInput(); });
+    socket.on('session_killed',  ({ reason }) => { isInteractive = false; setStatus('Killed: ' + reason); detachInput(); });
+    socket.on('input_error',     ({ error }) => console.warn('input error:', error));
+
+    if (isInteractive) attachInput();
+  }
+
+  function setStatus(s) { document.getElementById('status').textContent = s; }
+
+  function drawFrame(dataUrl) {
+    const c = document.getElementById('cv');
+    const ctx = c.getContext('2d');
+    const img = new Image();
+    img.onload = () => {
+      if (c.width !== img.width || c.height !== img.height) { c.width = img.width; c.height = img.height; }
+      ctx.drawImage(img, 0, 0);
+    };
+    img.src = dataUrl;
+  }
+
+  // — Nav —
+  function navAction(action) { if (socket) socket.emit('browser_input', { action }); }
+  function navGo() {
+    let url = document.getElementById('navUrl').value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    socket.emit('browser_input', { action: 'navigate', url });
+  }
+
+  // — Input —
+  let attached = false, mouseDown = false, lastMove = 0;
+  function attachInput() {
+    if (attached) return;
+    attached = true;
+    const c = document.getElementById('cv');
+    c.addEventListener('mousedown',   handleMouseDown);
+    c.addEventListener('mousemove',   handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+    c.addEventListener('wheel',       handleWheel, { passive: false });
+    c.addEventListener('contextmenu', e => e.preventDefault());
+    c.addEventListener('keydown',     handleKeyDown);
+    c.addEventListener('keyup',       handleKeyUp);
+    c.focus();
+  }
+  function detachInput() {
+    if (!attached) return;
+    attached = false; mouseDown = false;
+    const c = document.getElementById('cv');
+    c.removeEventListener('mousedown', handleMouseDown);
+    c.removeEventListener('mousemove', handleMouseMove);
+    document.removeEventListener('mouseup', handleMouseUp);
+    c.removeEventListener('wheel',     handleWheel);
+    c.removeEventListener('keydown',   handleKeyDown);
+    c.removeEventListener('keyup',     handleKeyUp);
+  }
+  function coords(e) {
+    const c = document.getElementById('cv');
+    const r = c.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(c.width,  (e.clientX - r.left) * (c.width  / r.width))),
+      y: Math.max(0, Math.min(c.height, (e.clientY - r.top)  * (c.height / r.height))),
+    };
+  }
+  const btn  = (e) => e.button === 2 ? 'right' : e.button === 1 ? 'middle' : 'left';
+  const mods = (e) => (e.altKey?1:0) | (e.ctrlKey?2:0) | (e.metaKey?4:0) | (e.shiftKey?8:0);
+
+  function handleMouseDown(e) {
+    e.preventDefault();
+    mouseDown = true;
+    const { x, y } = coords(e);
+    socket.emit('browser_input', { action: 'mouseDown', x, y, button: btn(e), clickCount: e.detail || 1, modifiers: mods(e) });
+    document.getElementById('cv').focus();
+  }
+  function handleMouseMove(e) {
+    const now = performance.now();
+    if (now - lastMove < 40) return;
+    lastMove = now;
+    const { x, y } = coords(e);
+    socket.emit('browser_input', { action: 'mouseMove', x, y, button: mouseDown ? btn(e) : 'none', modifiers: mods(e) });
+  }
+  function handleMouseUp(e) {
+    if (!mouseDown) return;
+    mouseDown = false;
+    const { x, y } = coords(e);
+    socket.emit('browser_input', { action: 'mouseUp', x, y, button: btn(e), modifiers: mods(e) });
+  }
+  function handleWheel(e) {
+    e.preventDefault();
+    const { x, y } = coords(e);
+    socket.emit('browser_input', { action: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY });
+  }
+  function handleKeyDown(e) {
+    e.preventDefault();
+    const isChar = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (isChar) {
+      socket.emit('browser_input', { action: 'char', text: e.key, modifiers: mods(e) });
+    } else {
+      socket.emit('browser_input', { action: 'keyDown', key: e.key, code: e.code, keyCode: e.keyCode, modifiers: mods(e) });
+    }
+  }
+  function handleKeyUp(e) {
+    e.preventDefault();
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) return;
+    socket.emit('browser_input', { action: 'keyUp', key: e.key, code: e.code, keyCode: e.keyCode, modifiers: mods(e) });
+  }
+</script>
+</body>
+</html>
