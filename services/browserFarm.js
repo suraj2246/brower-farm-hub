@@ -418,8 +418,34 @@ const launchInteractive = async (profileId) => {
     stopCast: screencast.stop, stopMonitor, inputBridge, proxyCleanup, stopAll,
   });
 
-  // Default landing — about:blank by default; user navigates from the URL bar
-  page.goto('about:blank').catch(()=>{});
+  // Default landing — show a welcome page instead of about:blank.
+  // Headless CDP screencast often skips idle blank pages → canvas stays empty.
+  // A real (even local) page forces the first frame so the user sees something.
+  const welcomeHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`
+    <html><head><title>Browser Farm</title></head>
+    <body style="margin:0;font-family:-apple-system,sans-serif;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+      <div style="text-align:center;padding:40px;">
+        <h1 style="color:#6cb3ff;margin:0 0 12px;">🌐 Interactive Session</h1>
+        <p style="margin:6px 0;opacity:.7;">Type a URL in the bar above and click Go</p>
+        <p style="margin:6px 0;opacity:.5;font-size:13px;">Profile: ${profile.name}</p>
+        <p style="margin:6px 0;opacity:.4;font-size:12px;">Proxy IP: ${v.ip}</p>
+      </div>
+    </body></html>
+  `)}`;
+  page.goto(welcomeHtml).catch(()=>{});
+
+  // Force one screenshot frame ~1s after launch as a safety net, in case screencast doesn't emit
+  setTimeout(async () => {
+    try {
+      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+      emit('farm_frame', {
+        profileId:      profileId.toString(),
+        frame:          'data:image/jpeg;base64,' + buf.toString('base64'),
+        viewportWidth:  fp.viewport.width,
+        viewportHeight: fp.viewport.height,
+      });
+    } catch {}
+  }, 1500);
 
   emit('session_started', { profileId: profileId.toString() });
   emitProfile(profile);
