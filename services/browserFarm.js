@@ -345,21 +345,26 @@ const runWarmSession = async (profileId) => {
 const launchInteractive = async (profileId) => {
   const profile = await BrowserProfile.findById(profileId);
   if (!profile)                                  throw new Error('Profile not found');
-  if (_activeSessions.has(profileId.toString())) throw new Error('Profile already has an active session');
-  if (!profile.proxy?.host || !profile.proxy?.port) throw new Error('No proxy configured');
+  if (_activeSessions.has(profileId.toString())) throw new Error('Profile already has an active session (warm or interactive). Wait for it to finish or pause it.');
 
   const log = (level, msg) => logProfile(profile, level, msg);
   log('info', '── INTERACTIVE SESSION STARTING ──');
 
-  let proxyData = profile.proxy;
+  // Resolve proxy AFTER checking mode (engine mode populates proxy on-demand)
+  let proxyData;
   if (profile.proxyMode === 'engine') {
-    proxyData = await fetchEngineProxy(log);
+    proxyData = await fetchEngineProxy(log); // throws if ENGINE_URL not set / no active proxies
     profile.proxy = proxyData;
     await profile.save();
+  } else {
+    proxyData = profile.proxy;
+    if (!proxyData?.host || !proxyData?.port) {
+      throw new Error('No proxy configured — click "🌐 Edit proxy" on the profile card and set one first');
+    }
   }
 
   const v = await proxyMonitor.verifyProxy(proxyData);
-  if (!v.ok) throw new Error(`Proxy dead: ${v.error}`);
+  if (!v.ok) throw new Error(`Proxy unreachable: ${v.error} (host: ${proxyData.host}:${proxyData.port}, protocol: ${proxyData.protocol})`);
   log('success', `  Proxy alive — IP: ${v.ip}`);
 
   const launched = await launchFarmBrowser(profile, { blockResources: false });
