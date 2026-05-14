@@ -70,6 +70,20 @@
   .nav-bar input { flex: 1; font-size: 12px; background: #0a0a14; color: #e0e0e8; border: 1px solid #2a2a3a; padding: 6px 10px; border-radius: 4px; }
   .nav-bar .icon-btn { width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; }
 
+  /* — Tab strip — */
+  .tab-strip { display: none; align-items: center; background: #14141c; border-bottom: 1px solid #2a2a3a; padding: 4px 8px; gap: 4px; overflow-x: auto; min-height: 32px; }
+  .tab-strip.show { display: flex; }
+  .tab-strip::-webkit-scrollbar { height: 4px; }
+  .tab-strip::-webkit-scrollbar-thumb { background: #3a3a4a; border-radius: 2px; }
+  .tab-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; background: #22222e; border: 1px solid #2a2a3a; border-radius: 4px; font-size: 12px; max-width: 220px; cursor: pointer; flex-shrink: 0; }
+  .tab-item:hover { background: #2a2a38; }
+  .tab-item.active { background: #2d6cdf; border-color: #2d6cdf; color: #fff; }
+  .tab-item .t-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 170px; }
+  .tab-item .t-close { background: transparent; border: 0; color: inherit; padding: 0 4px; cursor: pointer; opacity: 0.6; font-size: 14px; line-height: 1; }
+  .tab-item .t-close:hover { opacity: 1; }
+  .tab-new-btn { background: #22222e; border: 1px solid #2a2a3a; color: #e0e0e8; border-radius: 4px; padding: 4px 12px; font-size: 16px; cursor: pointer; line-height: 1; flex-shrink: 0; }
+  .tab-new-btn:hover { background: #2a2a38; }
+
   .live-view { background: #050508; overflow: auto; padding: 14px; display: flex; align-items: center; justify-content: center; position: relative; }
   .live-view .placeholder { color: #555; font-size: 13px; }
   .live-view canvas { max-width: 100%; max-height: 100%; background: #fff; border: 2px solid #2a2a3a; }
@@ -162,6 +176,10 @@
         <h2 id="liveTitle">Select a profile</h2>
         <span id="liveStatusBadge"></span>
         <div style="margin-left:auto; display:flex; gap:6px;" id="liveActions"></div>
+      </div>
+      <div class="tab-strip" id="tabStrip">
+        <div id="tabList" style="display:contents"></div>
+        <button class="tab-new-btn" onclick="openNewTab()" title="New tab">+</button>
       </div>
       <div class="nav-bar" id="navBar">
         <button class="btn icon-btn" onclick="navAction('back')"    title="Back">◀</button>
@@ -403,6 +421,15 @@
       if (data.viewportHeight) currentViewport.height = data.viewportHeight;
       drawFrame(data.frame);
     });
+    socket.on('tabs_updated', ({ profileId, tabs, activeTabId }) => {
+      if (profileId !== watchingProfileId) return;
+      renderTabs(tabs, activeTabId);
+      const active = tabs.find(t => t.active);
+      const navUrl = document.getElementById('navUrl');
+      if (active && active.url && !active.url.startsWith('data:') && active.url !== 'about:blank' && document.activeElement !== navUrl) {
+        navUrl.value = active.url;
+      }
+    });
     socket.on('input_error',({ error }) => console.warn('input error:', error));
   }
 
@@ -524,7 +551,9 @@
       ${p.isLive ? `<button class="btn btn-sm" onclick="${watchingProfileId===p._id?'stopWatch()':`startWatch('${p._id}')`}">${watchingProfileId===p._id?'⏹ Stop watch':'👁 Watch'}</button>` : ''}
       ${interactive ? '<span style="font-size:12px;color:#d18aff">● INTERACTIVE</span>' : ''}
     `;
-    document.getElementById('navBar').classList.toggle('show', interactive && watchingProfileId === p._id);
+    const showInteractiveUI = interactive && watchingProfileId === p._id;
+    document.getElementById('navBar').classList.toggle('show', showInteractiveUI);
+    document.getElementById('tabStrip').classList.toggle('show', showInteractiveUI);
   }
   function startWatch(id) {
     if (watchingProfileId === id) return;
@@ -554,6 +583,8 @@
     canvas.classList.remove('interactive');
     detachInputCapture();
     document.getElementById('navBar').classList.remove('show');
+    document.getElementById('tabStrip').classList.remove('show');
+    document.getElementById('tabList').innerHTML = '';
     refreshActionsBar();
   }
   function drawFrame(dataUrl) {
@@ -808,6 +839,31 @@
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
     socket.emit('browser_input', { profileId: watchingProfileId, action: 'navigate', url });
+  }
+
+  // — Tabs —
+  function renderTabs(tabList, activeTabId) {
+    const el = document.getElementById('tabList');
+    el.innerHTML = (tabList || []).map(t => {
+      const display = (t.title && t.title.trim()) || t.url || 'New Tab';
+      const short = display.length > 30 ? display.substring(0, 30) + '…' : display;
+      return `<div class="tab-item ${t.tabId===activeTabId?'active':''}" onclick="switchTab('${t.tabId}')">
+        <span class="t-title" title="${escapeHtml(display)}">${escapeHtml(short)}</span>
+        <button class="t-close" onclick="event.stopPropagation(); closeTab('${t.tabId}')" title="Close">×</button>
+      </div>`;
+    }).join('');
+  }
+  function switchTab(tabId) {
+    if (!watchingProfileId) return;
+    socket.emit('browser_input', { profileId: watchingProfileId, action: 'switchTab', tabId });
+  }
+  function closeTab(tabId) {
+    if (!watchingProfileId) return;
+    socket.emit('browser_input', { profileId: watchingProfileId, action: 'closeTab', tabId });
+  }
+  function openNewTab() {
+    if (!watchingProfileId) return;
+    socket.emit('browser_input', { profileId: watchingProfileId, action: 'newTab' });
   }
 
   // — Interactive input capture —
