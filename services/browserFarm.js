@@ -368,7 +368,7 @@ const launchInteractive = async (profileId) => {
   log('success', `  Proxy alive — IP: ${v.ip}`);
 
   const launched = await launchFarmBrowser(profile, { blockResources: false });
-  const { context, page, fp, cleanup: proxyCleanup } = launched;
+  const { context, page: initialPage, fp, cleanup: proxyCleanup } = launched;
 
   if (!profile.fingerprint?.userAgent) profile.fingerprint = fp;
   profile.interactive = { active: true, startedAt: new Date() };
@@ -385,23 +385,174 @@ const launchInteractive = async (profileId) => {
     emit('session_killed', { profileId: profileId.toString(), reason });
   }, log, { tolerateIpRotation: true });
 
-  // Track when the last frame was emitted (CDP or screenshot).
-  // Used by the periodic screenshot fallback to skip if CDP just emitted.
+  // — Frame tracking + refresh interval (declared early to avoid TDZ) —
   let lastFrameAt = Date.now();
   let frameRefreshInterval = null;
 
-  const screencast = await startScreencast(page, (frame, metadata) => {
-    lastFrameAt = Date.now();
-    emit('farm_frame', {
-      profileId:      profileId.toString(),
-      frame,
-      viewportWidth:  fp.viewport.width,
-      viewportHeight: fp.viewport.height,
-      metadata,
-    });
-  }, { quality: 75, maxWidth: fp.viewport.width, maxHeight: fp.viewport.height, everyNthFrame: 1 });
+  // — TAB MANAGEMENT —
+  // tabs: Map<tabId, { page, cdp, url, title, screencastActive }>
+  // Only the active tab streams frames (saves bandwidth — user sees one at a time).
+  const tabs = new Map();
+  let activeTabId = null;
+  let nextTabSeq  = 1;
 
-  const inputBridge = createInputBridge(screencast.cdp);
+  const emitTabList = () => {
+    const list = Array.from(tabs.entries()).map(([id, t]) => ({
+      tabId: id,
+      url:   t.url   || (() => { try { return t.page.url(); } catch { return ''; } })(),
+      title: t.title || '',
+      active: id === activeTabId,
+    }));
+    emit('tabs_updated', { profileId: profileId.toString(), tabs: list, activeTabId });
+  };
+
+  const updateTabInfo = async (tabId) => {
+    const tab = tabs.get(tabId);
+    if (!tab) return;
+    try { tab.url = tab.page.url(); } catch {}
+    try { tab.title = await tab.page.title().catch(() => ''); } catch {}
+    emitTabList();
+  };
+
+  const registerTab = async (pageObj) => {
+    // Dedupe: if this page is already registered, skip
+    for (const t of tabs.values()) if (t.page === pageObj) return null;
+
+    const tabId = `tab_${nextTabSeq++}`;
+    let cdp;
+    try {
+      cdp = await context.newCDPSession(pageObj);
+    } catch (e) {
+      log('warning', `Couldn't attach CDP to tab: ${e.message}`);
+      return null;
+    }
+
+    const tab = {
+      page: pageObj, cdp, tabId,
+      url: '', title: '',
+      screencastActive: false,
+    };
+    tabs.set(tabId, tab);
+
+    // Frame handler — only emit if this tab is active (saves bandwidth)
+    cdp.on('Page.screencastFrame', async (e) => {
+      try { await cdp.send('Page.screencastFrameAck', { sessionId: e.sessionId }); } catch {}
+      if (tabId !== activeTabId) return;
+      lastFrameAt = Date.now();
+      emit('farm_frame', {
+        profileId:      profileId.toString(),
+        frame:          'data:image/jpeg;base64,' + e.data,
+        viewportWidth:  fp.viewport.width,
+        viewportHeight: fp.viewport.height,
+      });
+    });
+
+    // Lifecycle
+    pageObj.on('framenavigated', () => updateTabInfo(tabId).catch(()=>{}));
+    pageObj.on('domcontentloaded', () => updateTabInfo(tabId).catch(()=>{}));
+    pageObj.on('close', async () => {
+      log('info', `Tab ${tabId} closed (${tab.url || 'no url'})`);
+      tabs.delete(tabId);
+      if (activeTabId === tabId) {
+        const next = tabs.keys().next().value;
+        if (next) { await switchTab(next).catch(()=>{}); }
+        else {
+          // All tabs closed — open a new welcome tab so the canvas isn't blank
+          activeTabId = null;
+          try {
+            const fresh = await context.newPage();
+            await fresh.goto(welcomeHtml).catch(()=>{});
+            // context.on('page') will register + switch
+          } catch (e) { log('warning', `Couldn't open fresh tab: ${e.message}`); }
+        }
+      }
+      emitTabList();
+    });
+
+    log('info', `Tab registered: ${tabId}`);
+    updateTabInfo(tabId).catch(()=>{});
+    return tabId;
+  };
+
+  const switchTab = async (tabId) => {
+    const tab = tabs.get(tabId);
+    if (!tab) { log('warning', `switchTab: ${tabId} not found`); return; }
+
+    // Stop screencast on previously-active tab
+    if (activeTabId && activeTabId !== tabId) {
+      const oldTab = tabs.get(activeTabId);
+      if (oldTab && oldTab.screencastActive) {
+        try { await oldTab.cdp.send('Page.stopScreencast'); } catch {}
+        oldTab.screencastActive = false;
+      }
+    }
+
+    activeTabId = tabId;
+
+    // Start screencast on new active tab
+    if (!tab.screencastActive) {
+      try {
+        await tab.cdp.send('Page.startScreencast', {
+          format:        'jpeg',
+          quality:       75,
+          maxWidth:      fp.viewport.width,
+          maxHeight:     fp.viewport.height,
+          everyNthFrame: 1,
+        });
+        tab.screencastActive = true;
+      } catch (e) {
+        log('warning', `startScreencast failed for ${tabId}: ${e.message}`);
+      }
+    }
+
+    try { await tab.page.bringToFront(); } catch {}
+
+    // Force a quick screenshot frame so dashboard updates instantly on switch
+    setTimeout(async () => {
+      try {
+        const buf = await tab.page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 3000 });
+        emit('farm_frame', {
+          profileId:      profileId.toString(),
+          frame:          'data:image/jpeg;base64,' + buf.toString('base64'),
+          viewportWidth:  fp.viewport.width,
+          viewportHeight: fp.viewport.height,
+        });
+        lastFrameAt = Date.now();
+      } catch {}
+    }, 100);
+
+    emitTabList();
+  };
+
+  // Welcome page HTML — used for initial tab + when all tabs close
+  const welcomeHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`
+    <html><head><title>New Tab</title></head>
+    <body style="margin:0;font-family:-apple-system,sans-serif;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">
+      <div style="text-align:center;padding:40px;">
+        <h1 style="color:#6cb3ff;margin:0 0 12px;">🌐 New Tab</h1>
+        <p style="margin:6px 0;opacity:.7;">Type a URL in the bar above and click Go</p>
+        <p style="margin:6px 0;opacity:.5;font-size:13px;">Profile: ${profile.name}</p>
+        <p style="margin:6px 0;opacity:.4;font-size:12px;">Proxy IP: ${v.ip}</p>
+      </div>
+    </body></html>
+  `)}`;
+
+  // Auto-register tabs opened by JS (target="_blank", window.open, OAuth popups, context.newPage)
+  context.on('page', async (newPage) => {
+    log('info', `[context.page] new page event`);
+    const tabId = await registerTab(newPage);
+    if (tabId) await switchTab(tabId); // auto-switch to new tab, mirrors normal browser
+  });
+
+  // Register the initial page (created during launchPersistentContext — predates the listener)
+  const initialTabId = await registerTab(initialPage);
+  if (initialTabId) await switchTab(initialTabId);
+
+  // Input bridge — points at the CURRENTLY-ACTIVE tab's CDP via getter
+  const inputBridge = createInputBridge(() => {
+    const t = tabs.get(activeTabId);
+    return t ? t.cdp : null;
+  });
 
   let stopping = false;
   const stopAll = async () => {
@@ -409,7 +560,11 @@ const launchInteractive = async (profileId) => {
     stopping = true;
     log('info', 'Stopping interactive session...');
     try { clearInterval(frameRefreshInterval); } catch {}
-    try { await screencast.stop(); } catch {}
+    // Stop screencasts & detach CDP for all tabs
+    for (const tab of tabs.values()) {
+      try { if (tab.screencastActive) await tab.cdp.send('Page.stopScreencast'); } catch {}
+      try { await tab.cdp.detach(); } catch {}
+    }
     try { stopMonitor(); } catch {}
     try { await saveAndMarkClosed(profile, context); } catch (e) { log('warning', `Save err: ${e.message}`); }
     try { await proxyCleanup(); } catch {}
@@ -417,39 +572,26 @@ const launchInteractive = async (profileId) => {
     emit('session_ended', { profileId: profileId.toString() });
   };
 
-  page.on('close',    () => { log('info', 'Page closed — ending interactive'); stopAll().catch(()=>{}); });
-  context.on('close', () => { log('info', 'Context closed');                   stopAll().catch(()=>{}); });
+  context.on('close', () => { log('info', 'Context closed'); stopAll().catch(()=>{}); });
 
   _activeSessions.set(profileId.toString(), {
-    type: 'interactive', context, page,
-    stopCast: screencast.stop, stopMonitor, inputBridge, proxyCleanup, stopAll,
+    type: 'interactive', context,
+    tabs, get activeTabId() { return activeTabId; },
+    switchTab, registerTab,
+    inputBridge, proxyCleanup, stopAll,
   });
 
-  // Default landing — show a welcome page instead of about:blank.
-  // Headless CDP screencast often skips idle blank pages → canvas stays empty.
-  // A real (even local) page forces the first frame so the user sees something.
-  const welcomeHtml = `data:text/html;charset=utf-8,${encodeURIComponent(`
-    <html><head><title>Browser Farm</title></head>
-    <body style="margin:0;font-family:-apple-system,sans-serif;background:#1a1a1a;color:#fff;display:flex;align-items:center;justify-content:center;min-height:100vh;">
-      <div style="text-align:center;padding:40px;">
-        <h1 style="color:#6cb3ff;margin:0 0 12px;">🌐 Interactive Session</h1>
-        <p style="margin:6px 0;opacity:.7;">Type a URL in the bar above and click Go</p>
-        <p style="margin:6px 0;opacity:.5;font-size:13px;">Profile: ${profile.name}</p>
-        <p style="margin:6px 0;opacity:.4;font-size:12px;">Proxy IP: ${v.ip}</p>
-      </div>
-    </body></html>
-  `)}`;
-  page.goto(welcomeHtml).catch(()=>{});
+  // Load the welcome page in the initial tab
+  initialPage.goto(welcomeHtml).catch(()=>{});
 
-  // Periodic screenshot fallback. Emits a fresh JPEG frame every 4s if CDP
-  // hasn't emitted one recently. This is essential for:
-  //   1) Share viewers connecting late — they get a frame within seconds,
-  //      not minutes (CDP only emits on redraw; idle pages = no frames).
-  //   2) Recovering after socket disconnect/reconnect on slow networks.
+  // Periodic screenshot fallback for the ACTIVE tab — keeps reconnecting/late
+  // viewers seeing fresh content within ~4s even on idle pages.
   frameRefreshInterval = setInterval(async () => {
     if (Date.now() - lastFrameAt < 3500) return; // CDP just emitted, skip
+    const active = tabs.get(activeTabId);
+    if (!active) return;
     try {
-      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 5000 });
+      const buf = await active.page.screenshot({ type: 'jpeg', quality: 70, fullPage: false, timeout: 5000 });
       emit('farm_frame', {
         profileId:      profileId.toString(),
         frame:          'data:image/jpeg;base64,' + buf.toString('base64'),
@@ -457,13 +599,15 @@ const launchInteractive = async (profileId) => {
         viewportHeight: fp.viewport.height,
       });
       lastFrameAt = Date.now();
-    } catch {} // page may be navigating or closed — fine, try again next tick
+    } catch {}
   }, 4000);
 
-  // Also fire once immediately at 1.5s to bootstrap the initial frame fast
+  // Bootstrap initial frame fast
   setTimeout(async () => {
+    const active = tabs.get(activeTabId);
+    if (!active) return;
     try {
-      const buf = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+      const buf = await active.page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
       emit('farm_frame', {
         profileId:      profileId.toString(),
         frame:          'data:image/jpeg;base64,' + buf.toString('base64'),
@@ -514,7 +658,41 @@ const stopInteractive = async (profileId) => {
 const dispatchInput = async (profileId, input) => {
   const s = _activeSessions.get(profileId.toString());
   if (!s || s.type !== 'interactive') throw new Error('No interactive session');
+
+  // — Tab management actions —
+  if (input.action === 'switchTab') {
+    return s.switchTab(input.tabId);
+  }
+  if (input.action === 'closeTab') {
+    const t = s.tabs.get(input.tabId);
+    if (t) await t.page.close().catch(()=>{});
+    return;
+  }
+  if (input.action === 'newTab') {
+    const url = (input.url && /^https?:\/\//i.test(input.url)) ? input.url : null;
+    try {
+      const p = await s.context.newPage();
+      if (url) await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+      // context.on('page') will register + auto-switch
+    } catch (e) {
+      throw new Error('Failed to open new tab: ' + e.message);
+    }
+    return;
+  }
+  if (input.action === 'listTabs') {
+    return {
+      tabs: Array.from(s.tabs.entries()).map(([id, t]) => ({
+        tabId: id, url: t.url, title: t.title,
+      })),
+      activeTabId: s.activeTabId,
+    };
+  }
+
+  // — Page actions — route to active tab —
   if (!s.inputBridge) throw new Error('Input bridge not ready');
+  const active = s.tabs.get(s.activeTabId);
+  if (!active) throw new Error('No active tab');
+  const activePage = active.page;
 
   switch (input.action) {
     case 'mouseDown':
@@ -547,13 +725,13 @@ const dispatchInput = async (profileId, input) => {
       break;
     case 'navigate':
       if (input.url && /^https?:\/\//i.test(input.url)) {
-        await s.page.goto(input.url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
+        await activePage.goto(input.url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(()=>{});
       }
       break;
-    case 'back':    await s.page.goBack().catch(()=>{});    break;
-    case 'forward': await s.page.goForward().catch(()=>{}); break;
-    case 'reload':  await s.page.reload({ waitUntil: 'domcontentloaded' }).catch(()=>{}); break;
-    case 'currentUrl': return { url: s.page.url() };
+    case 'back':    await activePage.goBack().catch(()=>{});    break;
+    case 'forward': await activePage.goForward().catch(()=>{}); break;
+    case 'reload':  await activePage.reload({ waitUntil: 'domcontentloaded' }).catch(()=>{}); break;
+    case 'currentUrl': return { url: activePage.url() };
     default: throw new Error(`Unknown input action: ${input.action}`);
   }
 };
